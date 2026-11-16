@@ -48,6 +48,26 @@ namespace
     }
 }
 
+//Registers our GLFW error callback and initializes the GLFW library.
+Application::GLFWLibrary::GLFWLibrary()
+{
+	glfwSetErrorCallback(GLFWErrorCallback);
+    if (!glfwInit())
+        throw std::runtime_error("Failed to initialise GLFW");
+}
+
+//Terminates the GLFW library when the Application object is destroyed.
+Application::GLFWLibrary::~GLFWLibrary()
+{
+    glfwTerminate();
+}
+
+//Custom deleter for GLFWwindow.
+void Application::WindowDeleter::operator()(GLFWwindow* window) const
+{
+    glfwDestroyWindow(window);
+}
+
 //Constructor for the Application class. 
 //It initializes GLFW, creates a window, and sets up OpenGL context.
 Application::Application(int width, int height, const char* title)
@@ -70,8 +90,8 @@ Application::Application(int width, int height, const char* title)
 #endif
     //Creates an app window
 	//nullptr, nullptr: no monitor, no shared context
-    m_window = glfwCreateWindow(m_width, m_height, title, nullptr, nullptr);
-    
+	m_window.reset(glfwCreateWindow(m_width, m_height, title, nullptr, nullptr));
+
     //Check whether window creation was successful
     if (!m_window)
     {
@@ -80,23 +100,19 @@ Application::Application(int width, int height, const char* title)
     }
 
 	//Make the OpenGL context of the window current on the calling thread
-    glfwMakeContextCurrent(m_window);
+    glfwMakeContextCurrent(m_window.get());
 
 	//Enable V-Sync to synchronize the frame rate
     //with the monitor's refresh rate
     glfwSwapInterval(1);
 
 	//Register the framebuffer size callback to handle window resizing
-    glfwSetFramebufferSizeCallback(m_window, FramebufferSizeCallback);
+    glfwSetFramebufferSizeCallback(m_window.get(), FramebufferSizeCallback);
 
 	//GLFW retrieves the address of the OpenGL function pointers, which are then loaded by GLAD.
 	//MUST HAPPEN AFTER creating the OpenGL context and making it current.
     if (!gladLoadGLLoader(reinterpret_cast<GLADloadproc>(glfwGetProcAddress)))
-    {
-        glfwDestroyWindow(m_window);
-        glfwTerminate();
-        throw std::runtime_error("Failed to load OpenGL functions");
-    }
+		throw std::runtime_error("Failed to initialize GLAD");
 
     //Check whether our OpenGL context supports debugging
     GLint flags = 0;
@@ -115,27 +131,69 @@ Application::Application(int width, int height, const char* title)
 
 	//Sets the initial viewport size to match the window dimensions
     glViewport(0, 0, m_width, m_height);
+
+	//Creates a shader program from vertex and fragment shader files.
+	m_shader = std::make_unique<Shader>(
+        "shaders/basic.vert",
+        "shaders/basic.frag"
+    );
+
+    const float vertices[] = {
+		//positions         //colors (RGB)
+         0.5f, -0.5f, 0.0f,  1.0f, 0.0f, 0.0f,  //bottom right
+        -0.5f, -0.5f, 0.0f,  0.0f, 1.0f, 0.0f,  //bottom left
+         0.0f,  0.5f, 0.0f,  0.0f, 0.0f, 1.0f   //top 
+	};
+
+	//creates a Vertex Array Object (VAO) 
+    //to store the vertex attribute configuration
+    //and makes the VAO active
+    glGenVertexArrays(1, &m_vao);
+	glBindVertexArray(m_vao);
+
+	//Creates a Vertex Buffer Object (VBO)
+    //to store vertex data in GPU memory
+	//and uploads the vertex data to the GPU
+    glGenBuffers(1, &m_vbo);
+	glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
+	glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+
+	//There are 6 floats per vertex: 
+    //3 for position and 3 for color.
+	//The stride is the total size of one vertex in bytes.
+	//Stride = 6 * sizeof(float)
+	const GLsizei stride = 6 * sizeof(float);
+
+	//Configures the vertex attribute pointers for position
+	glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(0));
+	glEnableVertexAttribArray(0);
+
+	//Configures the vertex attribute pointers for color
+	glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, reinterpret_cast<void*>(3 * sizeof(float)));
+	glEnableVertexAttribArray(1);
 }
 
 //Destructor for the Application class.
 Application::~Application()
 {
-    glfwDestroyWindow(m_window);
-    glfwTerminate();
+    //Context is still alive here
+    //m_shader and m_window are destroyed after this body.
+    glDeleteBuffers(1, &m_vbo);
+    glDeleteVertexArrays(1, &m_vao);
 }
 
 //Processes keyboard input
 void Application::ProcessInput()
 {
-    if (glfwGetKey(m_window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
-        glfwSetWindowShouldClose(m_window, GLFW_TRUE);
+    if (glfwGetKey(m_window.get(), GLFW_KEY_ESCAPE) == GLFW_PRESS)
+        glfwSetWindowShouldClose(m_window.get(), GLFW_TRUE);
 }
 
 //Main loop of the application. 
 //It continues until the window is closed.
 void Application::Run()
 {
-    while (!glfwWindowShouldClose(m_window))
+    while (!glfwWindowShouldClose(m_window.get()))
     {
 		//process all pending events, such as keyboard and mouse input
         glfwPollEvents();
@@ -144,6 +202,12 @@ void Application::Run()
         glClearColor(0.02f, 0.02f, 0.05f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
-        glfwSwapBuffers(m_window);
+		m_shader->Bind();
+
+		m_shader->SetFloat("uTime", static_cast<float>(glfwGetTime()));
+		glBindVertexArray(m_vao);
+		glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        glfwSwapBuffers(m_window.get());
     }
 }

@@ -1,5 +1,11 @@
 #pragma once
 
+#include <glad/glad.h>
+
+#include <memory>
+
+#include "Shader.hpp"
+
 struct GLFWwindow;
 
 class Application
@@ -12,10 +18,31 @@ public:
 	Application& operator=(const Application&) = delete;
 
 	void Run();
+
 private:
+	struct GLFWLibrary
+	{
+		GLFWLibrary();
+		~GLFWLibrary();
+	};
+
+	struct WindowDeleter
+	{
+		void operator()(GLFWwindow* window) const;
+	};
+
 	void ProcessInput();
 
-	GLFWwindow* m_window = nullptr;
+	GLFWLibrary m_glfw;
+
+	//Unique pointer to manage the GLFW window
+	//Automatically destroys the window when the Application object is destroyed
+	std::unique_ptr<GLFWwindow, WindowDeleter> m_window;
+	std::unique_ptr<Shader> m_shader;
+
+	GLuint m_vao = 0;
+	GLuint m_vbo = 0;
+
 	int m_width;
 	int m_height;
 };
