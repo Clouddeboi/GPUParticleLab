@@ -70,8 +70,9 @@ void Application::WindowDeleter::operator()(GLFWwindow* window) const
 
 //Constructor for the Application class. 
 //It initializes GLFW, creates a window, and sets up OpenGL context.
+//static_cast<float> converts the integer width and height to float for aspect ratio calculation.
 Application::Application(int width, int height, const char* title)
-    : m_width(width), m_height(height)
+    : m_camera(static_cast<float>(width) / static_cast<float>(height))
 {
     glfwSetErrorCallback(GLFWErrorCallback);
 
@@ -90,7 +91,7 @@ Application::Application(int width, int height, const char* title)
 #endif
     //Creates an app window
 	//nullptr, nullptr: no monitor, no shared context
-	m_window.reset(glfwCreateWindow(m_width, m_height, title, nullptr, nullptr));
+	m_window.reset(glfwCreateWindow(width, height, title, nullptr, nullptr));
 
     //Check whether window creation was successful
     if (!m_window)
@@ -129,8 +130,17 @@ Application::Application(int width, int height, const char* title)
         glGetString(GL_SHADING_LANGUAGE_VERSION),
         glGetString(GL_RENDERER));
 
-	//Sets the initial viewport size to match the window dimensions
-    glViewport(0, 0, m_width, m_height);
+	//Get the actual framebuffer size in pixels,
+    //which may differ from the window size in screen coordinates
+    int framebufferWidth = 0;
+	int framebufferHeight = 0;
+
+    glfwGetFramebufferSize(m_window.get(), &framebufferWidth, &framebufferHeight);
+	
+    //Apply the framebuffer dimensions to the camera and viewport
+    OnFrameBufferResize(framebufferWidth, framebufferHeight);
+
+	glEnable(GL_DEPTH_TEST);
 
 	//Creates a shader program from vertex and fragment shader files.
 	m_shader = std::make_unique<Shader>(
@@ -139,11 +149,23 @@ Application::Application(int width, int height, const char* title)
     );
 
     const float vertices[] = {
-		//positions         //colors (RGB)
-         0.5f, -0.5f, 0.0f,  1.0f, 0.0f, 0.0f,  //bottom right
-        -0.5f, -0.5f, 0.0f,  0.0f, 1.0f, 0.0f,  //bottom left
-         0.0f,  0.5f, 0.0f,  0.0f, 0.0f, 1.0f   //top 
-	};
+		//Triangle vertices (position and color)
+        -0.5f, -0.5f, -0.3f,  1.0f, 0.6f, 0.1f,
+         0.5f, -0.5f, -0.3f,  1.0f, 0.9f, 0.2f,
+         0.0f,  0.5f, -0.3f,  0.9f, 0.3f, 0.7f,
+
+		 //X axis line vertices (position and color)
+         0.0f,  0.0f,  0.0f,  1.0f, 0.15f, 0.15f,
+         1.5f,  0.0f,  0.0f,  1.0f, 0.15f, 0.15f,
+
+		 //Y axis line vertices (position and color)
+         0.0f,  0.0f,  0.0f,  0.15f, 1.0f, 0.15f,
+         0.0f,  1.5f,  0.0f,  0.15f, 1.0f, 0.15f,
+
+		 //Z axis line vertices (position and color)
+         0.0f,  0.0f,  0.0f,  0.2f, 0.4f, 1.0f,
+         0.0f,  0.0f,  1.5f,  0.2f, 0.4f, 1.0f,
+    };
 
 	//creates a Vertex Array Object (VAO) 
     //to store the vertex attribute configuration
@@ -182,11 +204,49 @@ Application::~Application()
     glDeleteVertexArrays(1, &m_vao);
 }
 
+//Called whenever the window is resized.
+void Application::OnFrameBufferResize(int width, int height)
+{
+	//prevents division by zero when calculating the aspect ratio
+    if (width == 0 || height == 0)
+        return;
+
+	//Sets the OpenGL viewport to match the new window size
+    glViewport(0, 0, width, height);
+
+	//Updates the camera's aspect ratio to match the new window size
+    m_camera.SetAspect(static_cast<float>(width) / static_cast<float>(height));
+}
+
+//Connects the mouse scroll input to the camera's zoom functionality.
+void Application::OnScroll(float yOffset)
+{
+    m_camera.Zoom(yOffset);
+}
+
 //Processes keyboard input
 void Application::ProcessInput()
 {
-    if (glfwGetKey(m_window.get(), GLFW_KEY_ESCAPE) == GLFW_PRESS)
-        glfwSetWindowShouldClose(m_window.get(), GLFW_TRUE);
+	//Get the raw pointer to the GLFW window from the unique_ptr
+    GLFWwindow* window = m_window.get();
+
+    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS)
+        glfwSetWindowShouldClose(window, GLFW_TRUE);
+
+	//Get the current cursor position in screen coordinates
+    //from the top-left corner of the window
+    double x = 0.0;
+    double y = 0.0;
+    glfwGetCursorPos(window, &x, &y);
+
+	//If right mouse button is pressed and the user is currently orbiting
+    const bool rightDown = glfwGetMouseButton(window, GLFW_MOUSE_BUTTON_RIGHT) == GLFW_PRESS;
+    if(rightDown && m_orbiting)
+		m_camera.Orbit(static_cast<float>(x - m_lastCursorX), static_cast<float>(y - m_lastCursorY));
+
+    m_orbiting = rightDown;
+    m_lastCursorX = x;
+    m_lastCursorY = y;
 }
 
 //Main loop of the application. 
@@ -199,14 +259,16 @@ void Application::Run()
         glfwPollEvents();
         ProcessInput();
 
+		//Clear the color and depth buffers to prepare for new frame rendering
         glClearColor(0.02f, 0.02f, 0.05f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
 		m_shader->Bind();
 
-		m_shader->SetFloat("uTime", static_cast<float>(glfwGetTime()));
-		glBindVertexArray(m_vao);
+        m_shader->SetMat4("uViewProjection", m_camera.GetViewProjectionMatrix());
+        glBindVertexArray(m_vao);
 		glDrawArrays(GL_TRIANGLES, 0, 3);
+        glDrawArrays(GL_LINES, 3, 6);
 
         glfwSwapBuffers(m_window.get());
     }

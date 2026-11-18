@@ -4,6 +4,7 @@
 
 #include <memory>
 
+#include "Camera.hpp"
 #include "Shader.hpp"
 
 struct GLFWwindow;
@@ -32,6 +33,8 @@ private:
 	};
 
 	void ProcessInput();
+	void OnFrameBufferResize(int width, int height);
+	void OnScroll(float yOffset);
 
 	GLFWLibrary m_glfw;
 
@@ -43,6 +46,8 @@ private:
 	GLuint m_vao = 0;
 	GLuint m_vbo = 0;
 
-	int m_width;
-	int m_height;
+	Camera m_camera;
+	double m_lastCursorX = 0.0;
+	double m_lastCursorY = 0.0;
+	bool m_orbiting = false;
 };
